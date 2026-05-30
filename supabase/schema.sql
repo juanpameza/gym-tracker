@@ -14,6 +14,10 @@ create table if not exists programs (
   intake_chat  text
 );
 
+-- One program per user. Required for upsert(on_conflict=user_id) and keeps the
+-- app's single()/maybeSingle() reads unambiguous.
+create unique index if not exists programs_user_id_key on programs (user_id);
+
 alter table programs enable row level security;
 
 create policy "users see own programs"

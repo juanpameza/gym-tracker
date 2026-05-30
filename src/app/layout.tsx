@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { JetBrains_Mono, Fraunces } from 'next/font/google'
 import './globals.css'
+import NavBar from '@/components/NavBar'
 
 const jetbrainsMono = JetBrains_Mono({
   variable: '--font-jetbrains',
@@ -28,7 +29,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${jetbrainsMono.variable} ${fraunces.variable}`}>
-      <body className="min-h-screen">{children}</body>
+      <body className="min-h-screen">
+        {children}
+        <NavBar />
+      </body>
     </html>
   )
 }

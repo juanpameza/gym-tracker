@@ -4,12 +4,23 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { calc1RM, round5, workingWeight } from '@/lib/epley'
-import { DAY0_EXERCISES, STRENGTH_TARGETS } from '@/lib/routine'
+import { repTarget } from '@/lib/routine'
+import type { Routine } from '@/lib/routine'
 
 interface LiftEntry {
   weight: string
   reps: string
   notes: string
+}
+
+// A baseline test lift, derived from the user's routine + targets (no hardcoded list).
+interface Day0Lift {
+  id: string
+  name: string
+  protocol: string
+  targetReps: number
+  session: 'A' | 'B'
+  target1rm: number
 }
 
 interface ResultRow {
@@ -22,19 +33,65 @@ interface ResultRow {
 }
 
 interface SavedResults {
-  [liftId: string]: { weight: number; reps: number; est1rm: number; workingWeight: number }
+  [liftId: string]: { name: string; weight: number; reps: number; est1rm: number; workingWeight: number }
 }
 
-const INITIAL_ENTRIES: Record<string, LiftEntry> = Object.fromEntries(
-  DAY0_EXERCISES.map(ex => [ex.id, { weight: '', reps: '', notes: '' }])
-)
+type Profile = Record<string, string>
+type Targets = Record<string, number>
+
+// Derive the baseline lifts from the routine: every exercise that has a
+// strength target, in routine order, deduped, split evenly into two sessions.
+function deriveLifts(routine: Routine, targets: Targets): Day0Lift[] {
+  const seen = new Set<string>()
+  const base: Omit<Day0Lift, 'session'>[] = []
+  for (const day of Object.values(routine)) {
+    for (const ex of day.exercises) {
+      if (seen.has(ex.id)) continue
+      const target1rm = targets[ex.id]
+      if (!target1rm) continue
+      seen.add(ex.id)
+      const tr = repTarget(ex.reps)
+      base.push({ id: ex.id, name: ex.name, protocol: `Top set · ${tr} reps @ RPE 8`, targetReps: tr, target1rm })
+    }
+  }
+  const half = Math.ceil(base.length / 2)
+  return base.map((l, i) => ({ ...l, session: i < half ? 'A' : 'B' }))
+}
+
+function buildDay0Clipboard(rows: ResultRow[], profile: Profile): string {
+  const weight = profile.weight ? `${profile.weight} lbs` : 'bodyweight unknown'
+  const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()
+  const context = [profile.split, profile.experience, profile.goal, profile.horizon].filter(Boolean).join(' · ')
+
+  let text = `DAY 0 BASELINE RESULTS — ${weight} — ${date}\n`
+  text += '════════════════════════════════════════\n'
+  for (const row of rows) {
+    text += `${row.name.padEnd(26)} ${row.tested.padEnd(8)} → 1RM: ${(row.est1rm + ' lbs').padEnd(10)} / target ${(row.target1rm + ' lbs').padEnd(10)} (${row.pct}%)\n`
+  }
+  text += '════════════════════════════════════════\n'
+  if (context) text += `Context: ${context}\n`
+  text += `
+Based on this baseline${profile.horizon ? ` (goal horizon: ${profile.horizon})` : ''}, please:
+1. Recalibrate the starting weights in my routine to match my current level
+2. Confirm or update my strength targets
+3. Outline my week-by-week progression path to hit those targets
+
+Return the updated program as ONE JSON block in the same shape as before — "routine" (days → exercises with id, name, qual, sets, reps, weight, unit, progKey) and "targets" (keyed by exercise id):
+\`\`\`json
+{ "routine": { "day1": { "name": "...", "meta": "...", "exercises": [ /* ... */ ] } }, "targets": { /* id: goal1RM */ } }
+\`\`\``
+  return text
+}
 
 export default function Day0Page() {
   const router = useRouter()
-  const [entries, setEntries] = useState(INITIAL_ENTRIES)
+  const [lifts, setLifts] = useState<Day0Lift[]>([])
+  const [entries, setEntries] = useState<Record<string, LiftEntry>>({})
   const [report, setReport] = useState<ResultRow[] | null>(null)
   const [saved, setSaved] = useState<SavedResults | null>(null)
   const [programId, setProgramId] = useState<string | null>(null)
+  const [profile, setProfile] = useState<Profile>({})
+  const [loaded, setLoaded] = useState(false)
   const [copyLabel, setCopyLabel] = useState('▸ COPY TO CLIPBOARD')
   const [saving, setSaving] = useState(false)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -43,14 +100,21 @@ export default function Day0Page() {
     async function load() {
       const supabase = createClient()
       const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
+      if (!user) { setLoaded(true); return }
 
       const { data: prog } = await supabase
         .from('programs')
-        .select('id')
+        .select('id, profile, routine, targets')
         .eq('user_id', user.id)
         .single()
-      if (prog) setProgramId(prog.id)
+
+      if (prog) {
+        setProgramId(prog.id)
+        setProfile((prog.profile as Profile) || {})
+        const derived = deriveLifts((prog.routine as Routine) || {}, (prog.targets as Targets) || {})
+        setLifts(derived)
+        setEntries(Object.fromEntries(derived.map(l => [l.id, { weight: '', reps: '', notes: '' }])))
+      }
 
       let query = supabase
         .from('day0_results')
@@ -61,6 +125,7 @@ export default function Day0Page() {
       if (prog) query = query.eq('program_id', prog.id)
       const { data: existing } = await query.single()
       if (existing?.results) setSaved(existing.results as SavedResults)
+      setLoaded(true)
     }
     load()
   }, [])
@@ -79,7 +144,7 @@ export default function Day0Page() {
 
   function generateReport() {
     const rows: ResultRow[] = []
-    for (const ex of DAY0_EXERCISES) {
+    for (const ex of lifts) {
       const e = entries[ex.id]
       const w = parseFloat(e.weight)
       const r = parseFloat(e.reps)
@@ -110,11 +175,11 @@ export default function Day0Page() {
       setSaving(true)
       const results: SavedResults = {}
       for (const row of report) {
-        const ex = DAY0_EXERCISES.find(e => e.id === row.id)!
         const w = parseFloat(entries[row.id].weight)
         const r = parseFloat(entries[row.id].reps)
         const est = calc1RM(w, r)
         results[row.id] = {
+          name: row.name,
           weight: w,
           reps: r,
           est1rm: row.est1rm,
@@ -134,15 +199,7 @@ export default function Day0Page() {
   }
 
   function copyToClipboard(rows: ResultRow[]) {
-    const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()
-    let text = `DAY 0 BASELINE RESULTS — JP, 180 lbs — ${date}\n`
-    text += '════════════════════════════════════════\n'
-    for (const row of rows) {
-      text += `${row.name.padEnd(26)} ${row.tested.padEnd(8)} → 1RM: ${(row.est1rm + ' lbs').padEnd(10)} / target ${(row.target1rm + ' lbs').padEnd(10)} (${row.pct}%)\n`
-    }
-    text += '════════════════════════════════════════\n'
-    text += 'Claude — build my 6-month progression plan from this. Context: PPL+ 4-day, novice linear progression, goal: build muscle/strength, 6-month horizon, 180 lbs bodyweight.'
-
+    const text = buildDay0Clipboard(rows, profile)
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).then(() => flash())
     } else {
@@ -162,12 +219,25 @@ export default function Day0Page() {
     copyTimerRef.current = setTimeout(() => setCopyLabel('▸ COPY TO CLIPBOARD'), 2000)
   }
 
-  const sessionA = DAY0_EXERCISES.filter(e => e.session === 'A')
-  const sessionB = DAY0_EXERCISES.filter(e => e.session === 'B')
+  const sessionA = lifts.filter(e => e.session === 'A')
+  const sessionB = lifts.filter(e => e.session === 'B')
 
   if (saved && !report) {
-    return <SavedView results={saved} onRetake={() => setSaved(null)} onGoLog={() => router.push('/log/1/1')} />
+    return <SavedView results={saved} onRetake={() => setSaved(null)} onImport={() => router.push('/import')} onGoLog={() => router.push('/log/1/1')} />
   }
+
+  // No routine/targets yet → can't derive a personalized baseline test.
+  if (loaded && lifts.length === 0) {
+    return <NoProgramView onImport={() => router.push('/import')} onIntake={() => router.push('/intake')} />
+  }
+
+  const statsLine = [
+    profile.height,
+    profile.weight ? `${profile.weight} LBS` : null,
+    profile.split,
+    profile.goal ? `GOAL: ${profile.goal.toUpperCase()}` : null,
+    profile.horizon,
+  ].filter(Boolean).join(' / ')
 
   return (
     <div className="min-h-screen px-4 py-8 pb-20"
@@ -181,9 +251,11 @@ export default function Day0Page() {
           <h1 className="font-display font-black leading-none text-5xl mb-1">
             DAY <span className="text-[#d9a441] italic">0</span><br />TEST.
           </h1>
-          <div className="text-[11px] tracking-[0.2em] text-[#6b6a62] uppercase mt-4 border-t border-dashed border-[#2a2a25] pt-4">
-            JP / 6&apos;0&quot; / 180 LBS / 4-DAY PPL+ / GOAL: BUILD STRENGTH × 6 MONTHS
-          </div>
+          {statsLine && (
+            <div className="text-[11px] tracking-[0.2em] text-[#6b6a62] uppercase mt-4 border-t border-dashed border-[#2a2a25] pt-4">
+              {statsLine}
+            </div>
+          )}
         </header>
 
         {/* Instructions */}
@@ -194,15 +266,19 @@ export default function Day0Page() {
           {' '}Rest 2-3 min between heavy attempts. Warm up properly before testing weight.
           Split into two sessions, 2 days apart.
           <p className="text-[#6b6a62] text-[11px] mt-2">
-            Reps are pre-set per Epley formula (1RM = weight × (1 + reps/30)). Enter weight + actual reps achieved.
+            These lifts come from your program. Enter weight + actual reps; est. 1RM uses the Epley formula (weight × (1 + reps/30)).
           </p>
         </div>
 
         {/* Session A */}
-        <SessionBlock label="SESSION A" title="Push Focus" note="~45 min · 3 lifts" exercises={sessionA} entries={entries} calc={calc} updateEntry={updateEntry} />
+        {sessionA.length > 0 && (
+          <SessionBlock label="SESSION A" title="First Half" note={`~45 min · ${sessionA.length} lifts`} exercises={sessionA} entries={entries} calc={calc} updateEntry={updateEntry} />
+        )}
 
         {/* Session B */}
-        <SessionBlock label="SESSION B" title="Pull + Legs" note="~60 min · 4 lifts" exercises={sessionB} entries={entries} calc={calc} updateEntry={updateEntry} />
+        {sessionB.length > 0 && (
+          <SessionBlock label="SESSION B" title="Second Half" note={`~60 min · ${sessionB.length} lifts`} exercises={sessionB} entries={entries} calc={calc} updateEntry={updateEntry} />
+        )}
 
         {/* Generate */}
         {!report && (
@@ -221,7 +297,7 @@ export default function Day0Page() {
             <div className="absolute -top-3 left-6 bg-[#0e0e0c] text-[#d9a441] px-3 py-0.5 text-[10px] tracking-[0.25em]">// RESULTS</div>
             <h3 className="font-display font-black text-xl mb-1">BASELINE REPORT</h3>
             <p className="text-[10px] tracking-[0.2em] text-[#6b6a62] mb-5 uppercase">
-              JP · 180 lbs · {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()}
+              {profile.weight ? `${profile.weight} lbs · ` : ''}{new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()}
             </p>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-[13px]">
@@ -250,13 +326,13 @@ export default function Day0Page() {
                 className="bg-[#1a1a17] hover:bg-[#c8311a] text-[#f4ede0] px-5 py-3 font-bold text-[11px] tracking-[0.2em] cursor-pointer transition-colors disabled:opacity-50">
                 {saving ? '...' : copyLabel}
               </button>
-              <button onClick={() => router.push('/log/1/1')}
-                className="border border-[#1a1a17] hover:bg-[#1a1a17] hover:text-[#f4ede0] px-5 py-3 font-bold text-[11px] tracking-[0.2em] cursor-pointer transition-colors">
-                ▸ GO TO WEEK 1
+              <button onClick={() => router.push('/import')}
+                className="border border-[#d9a441] text-[#d9a441] hover:bg-[#d9a441] hover:text-[#1a1a17] px-5 py-3 font-bold text-[11px] tracking-[0.2em] cursor-pointer transition-colors">
+                ▸ IMPORT PROGRAM →
               </button>
             </div>
             <p className="mt-4 text-[11px] text-[#6b6a62] leading-relaxed border-t border-dashed border-[#ccc] pt-4">
-              Paste this summary into Claude to generate your personalized 6-month progression plan with weekly load targets.
+              Paste this into Claude to recalibrate your week-1 weights. Then import Claude&apos;s JSON response on the next screen.
             </p>
           </div>
         )}
@@ -273,7 +349,7 @@ function SessionBlock({
   label: string
   title: string
   note: string
-  exercises: typeof DAY0_EXERCISES
+  exercises: Day0Lift[]
   entries: Record<string, LiftEntry>
   calc: (id: string) => { est1rm: number | null; working: number | null }
   updateEntry: (id: string, field: keyof LiftEntry, value: string) => void
@@ -286,20 +362,21 @@ function SessionBlock({
         <span className="ml-auto text-[10px] text-[#6b6a62] tracking-[0.15em]">{note}</span>
       </div>
       {exercises.map((ex, i) => (
-        <LiftCard key={ex.id} num={i + 1} ex={ex} entry={entries[ex.id]} calc={calc} updateEntry={updateEntry} />
+        <LiftCard key={ex.id} num={i + 1} ex={ex} entry={entries[ex.id]} calc={calc} updateEntry={updateEntry} target1rm={ex.target1rm} />
       ))}
     </section>
   )
 }
 
 function LiftCard({
-  num, ex, entry, calc, updateEntry,
+  num, ex, entry, calc, updateEntry, target1rm,
 }: {
   num: number
-  ex: typeof DAY0_EXERCISES[0]
+  ex: Day0Lift
   entry: LiftEntry
   calc: (id: string) => { est1rm: number | null; working: number | null }
   updateEntry: (id: string, field: keyof LiftEntry, value: string) => void
+  target1rm: number
 }) {
   const { est1rm, working } = calc(ex.id)
 
@@ -310,6 +387,9 @@ function LiftCard({
         <div className="flex-1">
           <div className="font-display text-[19px] font-bold leading-tight">{ex.name}</div>
           <div className="text-[10px] text-[#d9a441] tracking-[0.15em] uppercase mt-0.5">{ex.protocol}</div>
+        </div>
+        <div className="text-[10px] text-[#6b6a62] tracking-[0.1em] text-right">
+          TARGET<br /><span className="text-[#f4ede0] font-bold">{target1rm} lbs</span>
         </div>
       </div>
       <div className="grid grid-cols-3 gap-3">
@@ -356,9 +436,40 @@ function InputField({ label, value, type, inputmode, onChange, placeholder }: {
   )
 }
 
-function SavedView({ results, onRetake, onGoLog }: {
+function NoProgramView({ onImport, onIntake }: { onImport: () => void; onIntake: () => void }) {
+  return (
+    <div className="min-h-screen px-4 py-8 pb-20"
+      style={{ backgroundImage: 'radial-gradient(ellipse at top left, rgba(217,164,65,0.06), transparent 50%), radial-gradient(ellipse at bottom right, rgba(200,49,26,0.05), transparent 50%)' }}>
+      <div className="max-w-2xl mx-auto">
+        <header className="border-2 border-[#f4ede0] p-6 mb-7 relative bg-[rgba(244,237,224,0.02)]">
+          <div className="absolute -top-3 right-5 bg-[#0e0e0c] px-2 text-[10px] tracking-[0.2em] text-[#d9a441]">FORM 00</div>
+          <div className="border border-[#c8311a] text-[#c8311a] inline-block px-2 py-1 text-[10px] tracking-[0.25em] mb-3 -rotate-1 font-bold">★ BASELINE PROTOCOL ★</div>
+          <h1 className="font-display font-black leading-none text-5xl">
+            DAY <span className="text-[#d9a441] italic">0</span><br />TEST.
+          </h1>
+        </header>
+        <div className="border-l-4 border-[#d9a441] pl-4 pr-2 py-3 mb-6 bg-[rgba(217,164,65,0.04)] text-[13px] leading-relaxed">
+          <span className="text-[#d9a441] font-bold">// NO PROGRAM YET</span>
+          <br />
+          The Day 0 test is built from your personalized program — the lifts and goals Claude sets for you. Import your program first, then come back to test your baseline.
+        </div>
+        <div className="flex gap-3 flex-wrap">
+          <button onClick={onImport} className="flex-1 min-w-[140px] bg-[#c8311a] hover:bg-[#d9a441] hover:text-[#1a1a17] text-[#f4ede0] font-bold tracking-[0.2em] text-[11px] uppercase py-4 transition-all cursor-pointer">
+            ▸ IMPORT PROGRAM
+          </button>
+          <button onClick={onIntake} className="flex-1 min-w-[140px] border border-[#f4ede0] hover:bg-[#f4ede0] hover:text-[#1a1a17] text-[#f4ede0] font-bold tracking-[0.2em] text-[11px] uppercase py-4 transition-all cursor-pointer">
+            ▸ INTAKE FORM
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SavedView({ results, onRetake, onImport, onGoLog }: {
   results: SavedResults
   onRetake: () => void
+  onImport: () => void
   onGoLog: () => void
 }) {
   return (
@@ -375,20 +486,19 @@ function SavedView({ results, onRetake, onGoLog }: {
         <div className="bg-[#f4ede0] text-[#1a1a17] p-8 border-2 border-[#4a9b5e] mb-6">
           <h3 className="font-display font-black text-xl mb-5">BASELINE RESULTS</h3>
           <div className="space-y-3">
-            {Object.entries(results).map(([id, r]) => {
-              const ex = DAY0_EXERCISES.find(e => e.id === id)
-              if (!ex) return null
-              return (
-                <div key={id} className="flex justify-between items-baseline border-b border-[#e0d8c8] pb-2">
-                  <span className="font-display font-bold text-sm">{ex.name}</span>
-                  <span className="text-[12px] text-[#6b6a62]">{r.weight}×{r.reps} → <strong>{r.est1rm} lbs 1RM</strong></span>
-                </div>
-              )
-            })}
+            {Object.entries(results).map(([id, r]) => (
+              <div key={id} className="flex justify-between items-baseline border-b border-[#e0d8c8] pb-2">
+                <span className="font-display font-bold text-sm">{r.name ?? id}</span>
+                <span className="text-[12px] text-[#6b6a62]">{r.weight}×{r.reps} → <strong>{r.est1rm} lbs 1RM</strong></span>
+              </div>
+            ))}
           </div>
         </div>
         <div className="flex gap-3 flex-wrap">
-          <button onClick={onGoLog} className="flex-1 min-w-[140px] bg-[#c8311a] hover:bg-[#d9a441] hover:text-[#1a1a17] text-[#f4ede0] font-bold tracking-[0.2em] text-[11px] uppercase py-4 transition-all cursor-pointer">
+          <button onClick={onImport} className="flex-1 min-w-[140px] bg-[#c8311a] hover:bg-[#d9a441] hover:text-[#1a1a17] text-[#f4ede0] font-bold tracking-[0.2em] text-[11px] uppercase py-4 transition-all cursor-pointer">
+            ▸ IMPORT PROGRAM
+          </button>
+          <button onClick={onGoLog} className="flex-1 min-w-[140px] border border-[#4a9b5e] text-[#4a9b5e] hover:bg-[#4a9b5e] hover:text-[#1a1a17] font-bold tracking-[0.2em] text-[11px] uppercase py-4 transition-all cursor-pointer">
             ▸ START WEEK 1
           </button>
           <button onClick={onRetake} className="flex-1 min-w-[140px] border border-[#f4ede0] hover:bg-[#f4ede0] hover:text-[#1a1a17] text-[#f4ede0] font-bold tracking-[0.2em] text-[11px] uppercase py-4 transition-all cursor-pointer">

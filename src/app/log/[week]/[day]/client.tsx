@@ -36,9 +36,12 @@ function getPrescribed(ex: Exercise, priorExercises: ExercisesMap | null): numbe
   return nextWeight(ex.progKey, ex.reps, ex.weight, ex.unit, priorSets)
 }
 
-function formatExport(weekNum: number, routine: Routine, exercises: ExercisesMap): string {
+function formatExport(weekNum: number, routine: Routine, exercises: ExercisesMap, profile: Record<string, string>): string {
   const days = Object.keys(routine)
-  let text = `WEEK ${String(weekNum).padStart(2, '0')} — JP / 180 LBS\n`
+  const weightStr = profile.weight ? `${profile.weight} LBS` : ''
+  const splitStr = profile.split ?? ''
+  const header = [weightStr, splitStr].filter(Boolean).join(' / ')
+  let text = `WEEK ${String(weekNum).padStart(2, '0')} — ${header}\n`
   text += '════════════════════════════════════════\n\n'
   days.forEach((dk, i) => {
     const day = routine[dk]
@@ -59,8 +62,11 @@ function formatExport(weekNum: number, routine: Routine, exercises: ExercisesMap
     text += '\n'
   })
   const nextWeek = weekNum + 1
+  const context = [profile.split, profile.experience, profile.goal, profile.horizon].filter(Boolean).join(', ')
   text += '════════════════════════════════════════\n'
-  text += `Claude — adjust week ${nextWeek} based on this. [Context: PPL+ 4-day, novice linear, 6-month goal]`
+  const goalStr = profile.horizon ? `my ${profile.horizon} goal` : 'my goal'
+  text += `Claude — review week ${weekNum} and adjust week ${nextWeek} if needed. Keep me on track for ${goalStr}.\n`
+  if (context) text += `[Context: ${context}]`
   return text
 }
 
@@ -70,6 +76,7 @@ export function WorkoutLogClient({
   routine,
   programId,
   userId,
+  profile,
   existingExercises,
   priorExercises,
 }: {
@@ -78,6 +85,7 @@ export function WorkoutLogClient({
   routine: Routine
   programId: string | null
   userId: string
+  profile: Record<string, string>
   existingExercises: ExercisesMap | null
   priorExercises: ExercisesMap | null
 }) {
@@ -143,7 +151,7 @@ export function WorkoutLogClient({
   }
 
   function handleExport() {
-    const text = formatExport(weekNum, routine, exercises)
+    const text = formatExport(weekNum, routine, exercises, profile)
     const copy = () => {
       const el = document.createElement('textarea')
       el.value = text
@@ -165,9 +173,30 @@ export function WorkoutLogClient({
     setTimeout(() => setExportLabel('▸ EXPORT WEEK SUMMARY'), 2000)
   }
 
-  if (!day) return <div className="p-8 text-[#c8311a]">Day not found.</div>
-
   const dayKeys = Object.keys(routine)
+
+  if (!day) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-6 text-center">
+        <div>
+          <p className="text-[#c8311a] font-display font-black text-2xl mb-3">
+            {dayKeys.length === 0 ? 'No program yet.' : 'Day not found.'}
+          </p>
+          <p className="text-[13px] text-[#6b6a62] mb-6">
+            {dayKeys.length === 0
+              ? 'Import your personalized program before logging workouts.'
+              : 'That day is not part of your routine.'}
+          </p>
+          <button
+            onClick={() => router.push(dayKeys.length === 0 ? '/import' : '/')}
+            className="border border-[#f4ede0] hover:bg-[#f4ede0] hover:text-[#1a1a17] text-[#f4ede0] font-bold tracking-[0.2em] text-[11px] uppercase py-3 px-6 transition-all cursor-pointer"
+          >
+            {dayKeys.length === 0 ? '▸ IMPORT PROGRAM' : '▸ DASHBOARD'}
+          </button>
+        </div>
+      </div>
+    )
+  }
   const completedSets = Object.values(exercises).flatMap(e => e.sets).filter(s => s.reps !== '').length
   const totalVolume = Object.values(exercises)
     .flatMap(e => e.sets)
@@ -196,13 +225,16 @@ export function WorkoutLogClient({
             TRAINING <span className="text-[#d9a441] italic">LOG.</span>
           </h1>
           <div className="text-[11px] tracking-[0.2em] text-[#6b6a62] uppercase mt-3 border-t border-dashed border-[#2a2a25] pt-3 flex justify-between flex-wrap gap-2">
-            <span>JP / 180 LBS / NOVICE LINEAR PROGRESSION</span>
+            <span>{[profile.weight ? `${profile.weight} LBS` : null, profile.split, profile.experience].filter(Boolean).join(' / ') || 'TRAINING LOG'}</span>
             <span>{new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).toUpperCase()}</span>
           </div>
         </header>
 
         {/* Day tabs */}
-        <div className="grid grid-cols-4 gap-2 mb-6">
+        <div
+          className="grid gap-2 mb-6"
+          style={{ gridTemplateColumns: `repeat(${dayKeys.length}, minmax(0, 1fr))` }}
+        >
           {dayKeys.map((dk, i) => {
             const dn = i + 1
             const isActive = dn === dayNum
