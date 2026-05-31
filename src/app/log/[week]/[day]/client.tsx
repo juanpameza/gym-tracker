@@ -3,8 +3,20 @@
 import { useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { nextWeight, verdict, cycleRPE, type SetLog, type RPE } from '@/lib/progression'
+import { nextWeight, verdict, cycleRPE, type SetLog } from '@/lib/progression'
 import type { Routine, Exercise } from '@/lib/routine'
+import { calc1RM } from '@/lib/epley'
+import StatBox from '@/components/StatBox'
+
+// Best estimated 1RM for an exercise across a set list.
+function bestEst(sets: SetLog[] | undefined): number | null {
+  let best: number | null = null
+  for (const s of sets ?? []) {
+    const est = calc1RM(parseFloat(s.weight), parseInt(s.reps))
+    if (est && (!best || est > best)) best = est
+  }
+  return best
+}
 
 type ExercisesMap = Record<string, { sets: SetLog[] }>
 
@@ -98,6 +110,56 @@ export function WorkoutLogClient({
   )
   const [exportLabel, setExportLabel] = useState('▸ EXPORT WEEK SUMMARY')
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Guards the session-completed activity so the debounced autosave fires it at most once per mount.
+  const emittedRef = useRef(false)
+
+  // On the FIRST completion of this (week, day), publish a feed activity.
+  // The DB's partial unique index on workout_completed de-dupes across mounts;
+  // a successful (non-conflict) insert means it's the genuine first completion,
+  // so PRs are emitted in the same breath. All inserts are best-effort.
+  const emitActivities = useCallback(
+    async (data: ExercisesMap) => {
+      try {
+        const supabase = createClient()
+        const totalVolume = Object.values(data)
+          .flatMap(e => e.sets)
+          .filter(s => s.reps && s.weight)
+          .reduce((acc, s) => acc + (parseFloat(s.weight) || 0) * (parseInt(s.reps) || 0), 0)
+        const setsDone = Object.values(data).flatMap(e => e.sets).filter(s => s.reps !== '').length
+        const dayName = routine[`day${dayNum}`]?.name ?? `Day ${dayNum}`
+
+        const { error } = await supabase.from('activities').insert({
+          actor_id: userId,
+          type: 'workout_completed',
+          payload: { week: weekNum, day: dayNum, dayName, totalVolume, setsDone },
+          visibility: 'friends',
+        })
+        // 23505 = already completed before; skip PRs to avoid re-announcing.
+        if (error) return
+
+        const day = routine[`day${dayNum}`]
+        const prs = (day?.exercises ?? [])
+          .filter(ex => ex.unit !== 'BW')
+          .flatMap(ex => {
+            const prior = bestEst(priorExercises?.[ex.id]?.sets)
+            const cur = bestEst(data[ex.id]?.sets)
+            if (prior && cur && cur > prior) {
+              return [{
+                actor_id: userId,
+                type: 'pr_set' as const,
+                payload: { exId: ex.id, exName: ex.name, est1rm: Math.round(cur), unit: ex.unit },
+                visibility: 'friends' as const,
+              }]
+            }
+            return []
+          })
+        if (prs.length) await supabase.from('activities').insert(prs)
+      } catch {
+        /* activity generation is non-fatal — the workout save is the source of truth */
+      }
+    },
+    [userId, weekNum, dayNum, routine, priorExercises]
+  )
 
   const saveLog = useCallback(
     async (data: ExercisesMap) => {
@@ -113,8 +175,17 @@ export function WorkoutLogClient({
         },
         { onConflict: 'user_id,program_id,week_num,day_num' }
       )
+
+      // Fire the feed activity once the session is fully logged.
+      const day = routine[`day${dayNum}`]
+      const prescribedSets = (day?.exercises ?? []).reduce((acc, ex) => acc + ex.sets, 0)
+      const filledSets = Object.values(data).flatMap(e => e.sets).filter(s => s.reps !== '').length
+      if (!emittedRef.current && prescribedSets > 0 && filledSets >= prescribedSets) {
+        emittedRef.current = true
+        emitActivities(data)
+      }
     },
-    [userId, programId, weekNum, dayNum]
+    [userId, programId, weekNum, dayNum, routine, emitActivities]
   )
 
   function handleInput(exId: string, setIdx: number, field: 'weight' | 'reps', value: string) {
@@ -435,15 +506,6 @@ function SetRow({
       >
         {rpeLabel}
       </button>
-    </div>
-  )
-}
-
-function StatBox({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="border border-[#2a2a25] p-3 text-center">
-      <div className="font-display text-3xl font-black text-[#d9a441] leading-none">{value}</div>
-      <div className="text-[9px] tracking-[0.2em] text-[#6b6a62] uppercase mt-1.5">{label}</div>
     </div>
   )
 }

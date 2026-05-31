@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import type { Routine } from '@/lib/routine'
 import { calc1RM } from '@/lib/epley'
+import StatBox from '@/components/StatBox'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,7 +43,7 @@ export default async function Dashboard() {
 
   const { data: prog } = await supabase
     .from('programs')
-    .select('id, routine, profile, targets')
+    .select('id, routine, profile, targets, forked_from_username')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -90,6 +91,9 @@ export default async function Dashboard() {
   const targets = (prog?.targets ?? {}) as Record<string, number>
   const weightLabel = profile.weight ? `${profile.weight} LBS` : null
   const splitLabel = profile.split ?? null
+  const forkedFrom = (prog?.forked_from_username ?? null) as string | null
+  // A forked routine with no intake profile yet — nudge the user to personalize.
+  const needsProfile = hasRoutine && Object.keys(profile).length === 0
 
   // Next unfinished workout
   const nextDayIdx = dayKeys.findIndex((_, i) => !loggedDays.has(i + 1))
@@ -144,7 +148,7 @@ export default async function Dashboard() {
             )}
           </h1>
           <div className="text-[11px] tracking-[0.2em] text-[#6b6a62] uppercase mt-4 border-t border-dashed border-[#2a2a25] pt-4 flex justify-between flex-wrap gap-2">
-            <span>{[weightLabel, splitLabel].filter(Boolean).join(' / ') || (prog ? 'YOUR PROGRAM' : 'NO PROGRAM YET')}</span>
+            <span>{[weightLabel, splitLabel].filter(Boolean).join(' / ') || (forkedFrom ? `FORKED FROM @${forkedFrom}` : prog ? 'YOUR PROGRAM' : 'NO PROGRAM YET')}</span>
             {started && <span>SINCE {started}</span>}
           </div>
         </header>
@@ -155,6 +159,26 @@ export default async function Dashboard() {
           <StatBox label="This Week" value={dayKeys.length ? `${loggedDays.size}/${dayKeys.length}` : '—'} />
           <StatBox label="Day 0" value={day0 ? '✓' : '—'} accent={!!day0} />
         </div>
+
+        {/* Personalize a forked/bootstrapped routine */}
+        {needsProfile && (
+          <div className="border border-[#d9a441] bg-[rgba(217,164,65,0.05)] p-5 mb-5">
+            <p className="text-[11px] tracking-[0.2em] text-[#d9a441] uppercase font-bold mb-2">
+              Make it yours
+            </p>
+            <p className="text-[13px] text-[#f4ede0] mb-4">
+              {forkedFrom
+                ? <>You&apos;re training on @{forkedFrom}&apos;s routine. Add your profile so Claude can personalize your progression.</>
+                : <>Add your profile so Claude can personalize your progression.</>}
+            </p>
+            <Link
+              href="/intake"
+              className="inline-block bg-[#d9a441] text-[#1a1a17] font-bold tracking-[0.2em] text-[11px] uppercase py-3 px-5 hover:bg-[#f4ede0] transition-colors"
+            >
+              ▸ ADD YOUR PROFILE
+            </Link>
+          </div>
+        )}
 
         {/* No program yet */}
         {!prog && (
@@ -339,29 +363,6 @@ export default async function Dashboard() {
           // GYM TRACKER v1 //
         </footer>
       </div>
-    </div>
-  )
-}
-
-function StatBox({
-  label,
-  value,
-  accent,
-}: {
-  label: string
-  value: string
-  accent?: boolean
-}) {
-  return (
-    <div className="border border-[#2a2a25] p-3 text-center">
-      <div
-        className={`font-display text-3xl font-black leading-none ${
-          accent ? 'text-[#4a9b5e]' : 'text-[#d9a441]'
-        }`}
-      >
-        {value}
-      </div>
-      <div className="text-[9px] tracking-[0.2em] text-[#6b6a62] uppercase mt-1.5">{label}</div>
     </div>
   )
 }

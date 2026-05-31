@@ -37,3 +37,84 @@ export function repTarget(reps: string): number {
   const n = parseInt(reps)
   return Number.isFinite(n) && n > 0 ? n : 5
 }
+
+// ---------------------------------------------------------------
+// Routine / targets validation. Shared by the import page (parsing
+// Claude's response) and the fork flow (validating a shared snapshot
+// before copying it into the forker's program).
+// ---------------------------------------------------------------
+
+export interface ParsedProgram {
+  routine?: Routine | null
+  targets?: Record<string, number>
+}
+
+export function normalizeRoutine(raw: unknown): Routine | null {
+  if (!raw || typeof raw !== 'object') return null
+  const out: Routine = {}
+  for (const [dayKey, dayVal] of Object.entries(raw as Record<string, unknown>)) {
+    if (!dayVal || typeof dayVal !== 'object') continue
+    const d = dayVal as Record<string, unknown>
+    const exRaw = Array.isArray(d.exercises) ? d.exercises : []
+    const exercises: Exercise[] = []
+    for (const e of exRaw) {
+      if (!e || typeof e !== 'object') continue
+      const ex = e as Record<string, unknown>
+      const id = typeof ex.id === 'string' ? ex.id.trim() : ''
+      const name = typeof ex.name === 'string' ? ex.name.trim() : ''
+      if (!id || !name) continue
+      const unit: Exercise['unit'] = UNITS.includes(ex.unit as Exercise['unit'])
+        ? (ex.unit as Exercise['unit'])
+        : 'lbs'
+      const progKey: ProgKey = PROG_KEYS.includes(ex.progKey as ProgKey)
+        ? (ex.progKey as ProgKey)
+        : unit === 'BW'
+          ? 'bodyweight'
+          : 'isolation'
+      const sets = Math.max(1, Math.round(Number(ex.sets) || 3))
+      const reps = typeof ex.reps === 'string' && ex.reps.trim() ? ex.reps.trim() : '8-10'
+      const weight = unit === 'BW' ? 0 : Math.max(0, Number(ex.weight) || 0)
+      const qual = typeof ex.qual === 'string' && ex.qual.trim() ? ex.qual.trim() : undefined
+      exercises.push({ id, name, qual, sets, reps, weight, unit, progKey })
+    }
+    if (!exercises.length) continue
+    const name = typeof d.name === 'string' && d.name.trim() ? d.name.trim() : dayKey
+    const meta = typeof d.meta === 'string' ? d.meta.trim() : ''
+    out[dayKey] = { name, meta, exercises }
+  }
+  return Object.keys(out).length ? out : null
+}
+
+export function normalizeTargets(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object') return {}
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const n = Number(v)
+    if (Number.isFinite(n) && n > 0) out[k] = Math.round(n)
+  }
+  return out
+}
+
+export function extractJson(text: string): ParsedProgram | null {
+  const blockMatch = text.match(/```json\s*([\s\S]*?)```/)
+  const jsonStr = blockMatch ? blockMatch[1].trim() : text.trim()
+  let parsed: unknown = null
+  try {
+    parsed = JSON.parse(jsonStr)
+  } catch {
+    const objMatch = text.match(/\{[\s\S]*"(?:routine|targets)"[\s\S]*\}/)
+    if (objMatch) {
+      try {
+        parsed = JSON.parse(objMatch[0])
+      } catch {
+        return null
+      }
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const obj = parsed as Record<string, unknown>
+  return {
+    routine: normalizeRoutine(obj.routine),
+    targets: normalizeTargets(obj.targets),
+  }
+}

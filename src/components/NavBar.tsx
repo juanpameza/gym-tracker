@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
+import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Routine } from '@/lib/routine'
@@ -9,13 +9,12 @@ import type { Routine } from '@/lib/routine'
 interface NavState {
   signedIn: boolean
   hasRoutine: boolean
-  hasDay0: boolean
   logHref: string
+  pendingRequests: number
 }
 
 export default function NavBar() {
   const pathname = usePathname()
-  const router = useRouter()
   const [state, setState] = useState<NavState | null>(null)
 
   useEffect(() => {
@@ -24,13 +23,12 @@ export default function NavBar() {
       const supabase = createClient()
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
-        if (active) setState({ signedIn: false, hasRoutine: false, hasDay0: false, logHref: '/log/1/1' })
+        if (active) setState({ signedIn: false, hasRoutine: false, logHref: '/log/1/1', pendingRequests: 0 })
         return
       }
 
-      const [{ data: prog }, { data: day0 }, { data: logs }] = await Promise.all([
+      const [{ data: prog }, { data: logs }, { data: pending }] = await Promise.all([
         supabase.from('programs').select('routine').eq('user_id', user.id).maybeSingle(),
-        supabase.from('day0_results').select('id').eq('user_id', user.id).limit(1).maybeSingle(),
         supabase
           .from('workout_logs')
           .select('week_num, day_num')
@@ -38,6 +36,11 @@ export default function NavBar() {
           .order('week_num', { ascending: false })
           .order('day_num', { ascending: false })
           .limit(20),
+        supabase
+          .from('friendships')
+          .select('requested_by')
+          .eq('status', 'pending')
+          .neq('requested_by', user.id),
       ])
 
       const routine = (prog?.routine as Routine) ?? {}
@@ -53,38 +56,30 @@ export default function NavBar() {
         logHref = nextDayIdx === -1 ? `/log/${latestWeek + 1}/1` : `/log/${latestWeek}/${nextDayIdx + 1}`
       }
 
-      if (active) setState({ signedIn: true, hasRoutine, hasDay0: !!day0, logHref })
+      if (active) setState({ signedIn: true, hasRoutine, logHref, pendingRequests: pending?.length ?? 0 })
     }
     load()
-    return () => {
-      active = false
-    }
+    return () => { active = false }
   }, [pathname])
 
   if (pathname.startsWith('/auth')) return null
-  // Hide until we know the user's state, and entirely when signed out.
   if (!state || !state.signedIn) return null
 
-  const items: { href: string; label: string; match: string }[] = [
+  const items: { href: string; label: string; match: string; badge?: number }[] = [
     { href: '/', label: 'HOME', match: '/' },
   ]
-  // DAY 0 and LOG only make sense once a routine exists — otherwise they're dead ends.
   if (state.hasRoutine) {
-    items.push({ href: '/day0', label: state.hasDay0 ? 'DAY 0' : 'DAY 0 ●', match: '/day0' })
     items.push({ href: state.logHref, label: 'LOG', match: '/log' })
   }
-  items.push({ href: '/intake', label: 'INTAKE', match: '/intake' })
-  items.push({ href: '/import', label: 'IMPORT', match: '/import' })
+  items.push({ href: '/feed', label: 'FEED', match: '/feed' })
+  items.push({ href: '/discover', label: 'PEOPLE', match: '/discover', badge: state.pendingRequests })
+  items.push({ href: '/profile/edit', label: 'PROFILE', match: '/profile' })
 
   function isActive(match: string) {
     if (match === '/') return pathname === '/'
+    // /friends and /u/* belong to the PEOPLE tab too.
+    if (match === '/discover') return pathname.startsWith('/discover') || pathname.startsWith('/friends') || pathname.startsWith('/u/')
     return pathname.startsWith(match)
-  }
-
-  async function handleSignOut() {
-    const supabase = createClient()
-    await supabase.auth.signOut()
-    router.push('/auth/signin')
   }
 
   return (
@@ -94,21 +89,20 @@ export default function NavBar() {
           <Link
             key={item.label}
             href={item.href}
-            className={`flex-1 py-3 text-center text-[9px] tracking-[0.15em] font-bold uppercase transition-colors border-t-2 ${
+            className={`relative flex-1 py-3 text-center text-[9px] tracking-[0.15em] font-bold uppercase transition-colors border-t-2 ${
               isActive(item.match)
                 ? 'border-[#d9a441] text-[#d9a441]'
                 : 'border-transparent text-[#6b6a62] hover:text-[#f4ede0]'
             }`}
           >
             {item.label}
+            {!!item.badge && item.badge > 0 && (
+              <span className="absolute top-1.5 right-[calc(50%-22px)] min-w-[14px] h-[14px] px-1 rounded-full bg-[#c8311a] text-[#f4ede0] text-[8px] leading-[14px] tracking-normal">
+                {item.badge}
+              </span>
+            )}
           </Link>
         ))}
-        <button
-          onClick={handleSignOut}
-          className="flex-1 py-3 text-center text-[9px] tracking-[0.15em] font-bold uppercase text-[#6b6a62] hover:text-[#c8311a] border-t-2 border-transparent transition-colors cursor-pointer"
-        >
-          OUT ↗
-        </button>
       </div>
     </nav>
   )
