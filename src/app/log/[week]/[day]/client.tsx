@@ -18,7 +18,7 @@ function bestEst(sets: SetLog[] | undefined): number | null {
   return best
 }
 
-type ExercisesMap = Record<string, { sets: SetLog[] }>
+export type ExercisesMap = Record<string, { sets: SetLog[] }>
 
 function initExercises(
   dayKey: string,
@@ -48,37 +48,69 @@ function getPrescribed(ex: Exercise, priorExercises: ExercisesMap | null): numbe
   return nextWeight(ex.progKey, ex.reps, ex.weight, ex.unit, priorSets)
 }
 
-function formatExport(weekNum: number, routine: Routine, exercises: ExercisesMap, profile: Record<string, string>): string {
+function formatExport(
+  weekNum: number,
+  routine: Routine,
+  weekData: Record<number, ExercisesMap>,
+  profile: Record<string, string>
+): string {
   const days = Object.keys(routine)
-  const weightStr = profile.weight ? `${profile.weight} LBS` : ''
-  const splitStr = profile.split ?? ''
-  const header = [weightStr, splitStr].filter(Boolean).join(' / ')
-  let text = `WEEK ${String(weekNum).padStart(2, '0')} — ${header}\n`
+  const nextWeek = weekNum + 1
+
+  // ── Preamble: orient a fresh chat that has none of this app's context ──
+  let text = 'You are my strength-training coach. Below is a full week from my workout log, '
+  text += 'exported from my tracking app. I want you to review it and program the next week.\n\n'
+
+  const who: string[] = []
+  if (profile.experience) who.push(`${profile.experience} lifter`)
+  if (profile.weight) who.push(`bodyweight ${profile.weight} lbs`)
+  if (profile.height) who.push(profile.height)
+  if (profile.split) who.push(`${profile.split} split`)
+  if (profile.goal) who.push(`goal: ${profile.goal}`)
+  if (profile.horizon) who.push(`horizon: ${profile.horizon}`)
+  if (who.length) text += `ABOUT ME: ${who.join(' · ')}\n\n`
+
+  text += 'HOW TO READ THIS LOG:\n'
+  text += '• Each day lists its exercises. "Plan" is what was prescribed; "Logged" is what I actually did.\n'
+  text += '• Each logged set is weight×reps, with RPE in parentheses when recorded (e.g. 185×5 (8) = 185 lbs for 5 reps at RPE 8).\n'
+  text += '• A dash (—) means the set was left blank / not completed. BW = bodyweight movement.\n\n'
+
+  text += `WEEK ${String(weekNum).padStart(2, '0')}\n`
   text += '════════════════════════════════════════\n\n'
+
   days.forEach((dk, i) => {
     const day = routine[dk]
-    text += `DAY ${i + 1} — ${day.name.toUpperCase()} (${day.meta})\n`
+    const dayNum = i + 1
+    const exercises = weekData[dayNum]
+    const logged = exercises && Object.keys(exercises).length > 0
+    text += `DAY ${dayNum} — ${day.name.toUpperCase()}${day.meta ? ` (${day.meta})` : ''}${logged ? '' : '  [not logged]'}\n`
     text += '----------------------------------------\n'
     day.exercises.forEach(ex => {
-      const exData = exercises[ex.id]
-      if (!exData) return
-      const setStrs = exData.sets
-        .map((s, idx) => {
-          if (!s.reps) return `[${idx + 1}: —]`
-          const rpe = s.rpe ? ` (${s.rpe})` : ''
-          return `${s.weight || '?'}×${s.reps}${rpe}`
-        })
-        .join('  ')
-      text += `${ex.name.padEnd(34)} ${setStrs}\n`
+      const plan = ex.unit === 'BW'
+        ? `${ex.sets}×${ex.reps} BW`
+        : `${ex.sets}×${ex.reps} @ ${ex.weight} lbs`
+      const exData = exercises?.[ex.id]
+      const setStrs = exData
+        ? exData.sets
+            .map((s, idx) => {
+              if (!s.reps) return `[${idx + 1}: —]`
+              const rpe = s.rpe ? ` (${s.rpe})` : ''
+              return `${s.weight || '?'}×${s.reps}${rpe}`
+            })
+            .join('  ')
+        : '—'
+      text += `${ex.name.padEnd(28)} Plan: ${plan.padEnd(18)} Logged: ${setStrs}\n`
     })
     text += '\n'
   })
-  const nextWeek = weekNum + 1
-  const context = [profile.split, profile.experience, profile.goal, profile.horizon].filter(Boolean).join(', ')
+
+  // ── What I want back ──
   text += '════════════════════════════════════════\n'
   const goalStr = profile.horizon ? `my ${profile.horizon} goal` : 'my goal'
-  text += `Claude — review week ${weekNum} and adjust week ${nextWeek} if needed. Keep me on track for ${goalStr}.\n`
-  if (context) text += `[Context: ${context}]`
+  text += `Please review week ${weekNum} and program week ${nextWeek} to keep me on track for ${goalStr}:\n`
+  text += `1. Note where I hit, missed, or beat the plan, and flag anything concerning (stalls, big RPE jumps, skipped work).\n`
+  text += `2. Give me week ${nextWeek}'s prescribed weights/reps for each exercise, and briefly say why each changed.\n`
+  text += `3. Call out any exercise I should swap, add, or drop.\n`
   return text
 }
 
@@ -91,6 +123,7 @@ export function WorkoutLogClient({
   profile,
   existingExercises,
   priorExercises,
+  weekExercises,
 }: {
   weekNum: number
   dayNum: number
@@ -100,6 +133,7 @@ export function WorkoutLogClient({
   profile: Record<string, string>
   existingExercises: ExercisesMap | null
   priorExercises: ExercisesMap | null
+  weekExercises: Record<number, ExercisesMap>
 }) {
   const router = useRouter()
   const dayKey = `day${dayNum}`
@@ -222,7 +256,10 @@ export function WorkoutLogClient({
   }
 
   function handleExport() {
-    const text = formatExport(weekNum, routine, exercises, profile)
+    // Merge the live current-day edits over the week's saved logs so the
+    // export reflects unsaved input for the day being worked on right now.
+    const weekData = { ...weekExercises, [dayNum]: exercises }
+    const text = formatExport(weekNum, routine, weekData, profile)
     const copy = () => {
       const el = document.createElement('textarea')
       el.value = text

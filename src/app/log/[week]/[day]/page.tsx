@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import { WorkoutLogClient } from './client'
+import { WorkoutLogClient, type ExercisesMap } from './client'
 import type { Routine } from '@/lib/routine'
 
 export const dynamic = 'force-dynamic'
@@ -33,13 +33,18 @@ export default async function LogPage({
   const dayCount = Math.max(1, Object.keys(routine).length)
   const dayNum = Math.min(dayCount, Math.max(1, parseInt(day) || 1))
 
-  const { data: existingLog } = await supabase
+  // Every logged day for this week — powers the full-week export. Keyed by day_num.
+  const { data: weekLogs } = await supabase
     .from('workout_logs')
-    .select('exercises')
+    .select('exercises, day_num')
     .eq('user_id', user.id)
     .eq('week_num', weekNum)
-    .eq('day_num', dayNum)
-    .maybeSingle()
+
+  const weekExercises: Record<number, ExercisesMap> = {}
+  for (const log of weekLogs ?? []) {
+    if (log.exercises) weekExercises[log.day_num] = log.exercises as ExercisesMap
+  }
+  const existingLog = { exercises: weekExercises[dayNum] ?? null }
 
   const { data: priorLog } = await supabase
     .from('workout_logs')
@@ -61,6 +66,7 @@ export default async function LogPage({
       profile={profile}
       existingExercises={existingLog?.exercises ?? null}
       priorExercises={priorLog?.exercises ?? null}
+      weekExercises={weekExercises}
     />
   )
 }
