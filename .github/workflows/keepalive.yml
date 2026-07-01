@@ -1,0 +1,33 @@
+name: Supabase keep-alive
+
+# Supabase free-tier projects pause after 7 days of no database activity.
+# This job runs a trivial authenticated REST query every day so the timer
+# never reaches 7 days. RLS returns no rows for the anon role — that's fine,
+# the request still counts as database activity.
+
+on:
+  schedule:
+    - cron: "17 7 * * *" # daily at 07:17 UTC
+  workflow_dispatch: {} # lets you trigger it manually from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping database
+        env:
+          SUPABASE_URL: https://eelyopwmkcvibphdphug.supabase.co
+          # Public anon key (same one shipped to the browser). Kept in a
+          # repo secret for hygiene; falls back to nothing if unset.
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/programs?select=user_id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "HTTP $code"
+          # 200 = query ran; 401/404 still hit the DB but signal a config problem.
+          if [ "$code" != "200" ]; then
+            echo "::error::Unexpected status $code — check SUPABASE_ANON_KEY / URL"
+            exit 1
+          fi
