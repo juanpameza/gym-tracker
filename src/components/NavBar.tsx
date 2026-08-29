@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Routine } from '@/lib/routine'
+import { nextWorkout } from '@/lib/logs'
 
 interface NavState {
   signedIn: boolean
@@ -29,9 +30,11 @@ export default function NavBar() {
 
       const [{ data: prog }, { data: logs }, { data: pending }] = await Promise.all([
         supabase.from('programs').select('routine').eq('user_id', user.id).maybeSingle(),
+        // Newest-first with a generous limit so every row of the latest week is
+        // present; `exercises` is needed to judge whether a day is actually done.
         supabase
           .from('workout_logs')
-          .select('week_num, day_num')
+          .select('week_num, day_num, exercises')
           .eq('user_id', user.id)
           .order('week_num', { ascending: false })
           .order('day_num', { ascending: false })
@@ -47,13 +50,13 @@ export default function NavBar() {
       const dayKeys = Object.keys(routine)
       const hasRoutine = dayKeys.length > 0
 
-      // Point LOG at the next unfinished day (or week N+1 if this week is complete).
+      // Point LOG at the session in progress / next up. Shared rule with the
+      // dashboard: a day only counts as done once every set has reps, so a
+      // half-logged last day no longer bounces you into week N+1.
       let logHref = '/log/1/1'
       if (hasRoutine) {
-        const latestWeek = logs?.[0]?.week_num ?? 1
-        const loggedDays = new Set((logs ?? []).filter(l => l.week_num === latestWeek).map(l => l.day_num))
-        const nextDayIdx = dayKeys.findIndex((_, i) => !loggedDays.has(i + 1))
-        logHref = nextDayIdx === -1 ? `/log/${latestWeek + 1}/1` : `/log/${latestWeek}/${nextDayIdx + 1}`
+        const next = nextWorkout(routine, logs ?? [])
+        logHref = `/log/${next.week}/${next.day}`
       }
 
       if (active) setState({ signedIn: true, hasRoutine, logHref, pendingRequests: pending?.length ?? 0 })
@@ -70,6 +73,7 @@ export default function NavBar() {
   ]
   if (state.hasRoutine) {
     items.push({ href: state.logHref, label: 'LOG', match: '/log' })
+    items.push({ href: '/progress', label: 'PROGRESS', match: '/progress' })
   }
   items.push({ href: '/feed', label: 'FEED', match: '/feed' })
   items.push({ href: '/discover', label: 'PEOPLE', match: '/discover', badge: state.pendingRequests })

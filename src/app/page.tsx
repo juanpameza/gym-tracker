@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import type { Routine } from '@/lib/routine'
 import { calc1RM } from '@/lib/epley'
+import { nextWorkout } from '@/lib/logs'
 import StatBox from '@/components/StatBox'
 
 export const dynamic = 'force-dynamic'
@@ -57,7 +58,7 @@ export default async function Dashboard() {
       .maybeSingle(),
     supabase
       .from('workout_logs')
-      .select('week_num, day_num, logged_at')
+      .select('week_num, day_num, logged_at, exercises')
       .eq('user_id', user.id)
       .order('week_num', { ascending: false })
       .order('day_num', { ascending: false })
@@ -74,9 +75,6 @@ export default async function Dashboard() {
   const routine: Routine | null = prog?.routine ?? null
   const dayKeys = routine ? Object.keys(routine) : []
 
-  const latestWeek = logs?.[0]?.week_num ?? 1
-  const thisWeekLogs = (logs ?? []).filter(l => l.week_num === latestWeek)
-  const loggedDays = new Set(thisWeekLogs.map(l => l.day_num))
   const totalSessions = logs?.length ?? 0
   const isEstablished = totalSessions > 0
   const hasRoutine = dayKeys.length > 0
@@ -95,12 +93,16 @@ export default async function Dashboard() {
   // A forked routine with no intake profile yet — nudge the user to personalize.
   const needsProfile = hasRoutine && Object.keys(profile).length === 0
 
-  // Next unfinished workout
-  const nextDayIdx = dayKeys.findIndex((_, i) => !loggedDays.has(i + 1))
-  const allDoneThisWeek = nextDayIdx === -1
-  const nextWeek = allDoneThisWeek ? latestWeek + 1 : latestWeek
-  const nextDay = allDoneThisWeek ? 1 : nextDayIdx + 1
-  const nextDayKey = allDoneThisWeek ? dayKeys[0] : dayKeys[nextDayIdx]
+  // Next workout — shared rule with the LOG tab (lib/logs nextWorkout): a day
+  // only counts as done once every prescribed set has reps, and the week only
+  // rolls over once its last started day is finished.
+  const next = nextWorkout(routine ?? {}, logs ?? [])
+  const latestWeek = next.latestWeek
+  const completeDays = next.completeDays
+  const allDoneThisWeek = next.week > latestWeek
+  const nextWeek = next.week
+  const nextDay = next.day
+  const nextDayKey = dayKeys[nextDay - 1]
 
   // Strength progress items — derived from the user's own targets (keyed by exercise id)
   const typedProgLogs = (progLogs ?? []) as { exercises: ExLog }[]
@@ -156,7 +158,7 @@ export default async function Dashboard() {
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3 mb-7">
           <StatBox label="Sessions" value={String(totalSessions)} />
-          <StatBox label="This Week" value={dayKeys.length ? `${loggedDays.size}/${dayKeys.length}` : '—'} />
+          <StatBox label="This Week" value={dayKeys.length ? `${completeDays.size}/${dayKeys.length}` : '—'} />
           <StatBox label="Day 0" value={day0 ? '✓' : '—'} accent={!!day0} />
         </div>
 
@@ -260,8 +262,13 @@ export default async function Dashboard() {
         {/* Strength progress toward goals */}
         {progressItems.length > 0 && (
           <div className="mb-7">
-            <div className="text-[10px] tracking-[0.25em] text-[#6b6a62] uppercase mb-4">
-              // Strength Progress //
+            <div className="flex justify-between items-baseline mb-4">
+              <div className="text-[10px] tracking-[0.25em] text-[#6b6a62] uppercase">
+                {'// Strength Progress //'}
+              </div>
+              <Link href="/progress" className="text-[9px] tracking-[0.2em] text-[#d9a441] hover:text-[#f4ede0] uppercase transition-colors">
+                Trends →
+              </Link>
             </div>
             <div className="space-y-4">
               {progressItems.map(item => (
@@ -294,14 +301,14 @@ export default async function Dashboard() {
         <div className="mb-7">
           <div className="text-[10px] tracking-[0.25em] text-[#6b6a62] uppercase mb-3">
             Week {latestWeek} —{' '}
-            {loggedDays.size === dayKeys.length
+            {completeDays.size === dayKeys.length
               ? 'COMPLETE ✓'
-              : `${dayKeys.length - loggedDays.size} day${dayKeys.length - loggedDays.size !== 1 ? 's' : ''} remaining`}
+              : `${dayKeys.length - completeDays.size} day${dayKeys.length - completeDays.size !== 1 ? 's' : ''} remaining`}
           </div>
           <div className="grid grid-cols-2 gap-3">
             {dayKeys.map((dk, i) => {
               const dn = i + 1
-              const done = loggedDays.has(dn)
+              const done = completeDays.has(dn)
               const isNext = !allDoneThisWeek && dn === nextDay
               return (
                 <Link

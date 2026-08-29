@@ -95,6 +95,8 @@ export default function ProfileActions({
       forked_from_user: targetUserId,
       forked_from_username: targetUsername,
       forked_at: new Date().toISOString(),
+      // A fork is a routine import: its weights should be prescribed as-is.
+      routine_updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' })
     if (e) { setForkState('error'); setError(e.message); return }
 

@@ -12,6 +12,7 @@ export default function ImportPage() {
   const [errorMsg, setErrorMsg] = useState('')
   const [preview, setPreview] = useState<ParsedProgram | null>(null)
   const [hasDay0, setHasDay0] = useState(false)
+  const [hasLogs, setHasLogs] = useState(false)
 
   function handleTextChange(val: string) {
     setText(val)
@@ -49,7 +50,12 @@ export default function ImportPage() {
     if (!prog) { setStatus('error'); setErrorMsg('No program found. Complete the intake first.'); return }
 
     const updates: Record<string, unknown> = {}
-    if (hasRoutine) updates.routine = parsed.routine
+    if (hasRoutine) {
+      updates.routine = parsed.routine
+      // Marks the imported weights as newer than any prior session, so the log
+      // page prescribes them verbatim instead of auto-progressing past them.
+      updates.routine_updated_at = new Date().toISOString()
+    }
     if (hasTargets) updates.targets = parsed.targets
 
     const { error } = await supabase
@@ -63,15 +69,25 @@ export default function ImportPage() {
       return
     }
 
-    const { data: day0 } = await supabase
-      .from('day0_results')
-      .select('id')
-      .eq('user_id', user.id)
-      .limit(1)
-      .maybeSingle()
+    const [{ data: day0 }, { data: anyLog }] = await Promise.all([
+      supabase.from('day0_results').select('id').eq('user_id', user.id).limit(1).maybeSingle(),
+      supabase.from('workout_logs').select('id').eq('user_id', user.id).limit(1).maybeSingle(),
+    ])
     setHasDay0(!!day0)
+    setHasLogs(!!anyLog)
     setStatus('done')
   }
+
+  // Where to send the user after a successful import: a mid-program update
+  // goes back to the dashboard (which points at the next session); a first
+  // import continues the onboarding flow.
+  const doneHref = hasLogs ? '/' : hasDay0 ? '/log/1/1' : '/day0'
+  const doneLabel = hasLogs ? '▸ BACK TO DASHBOARD' : hasDay0 ? '▸ START WEEK 1' : '▸ PROCEED TO DAY 0 TEST'
+  const doneCopy = hasLogs
+    ? 'Your updated routine and targets are saved. Your next session will prescribe the new weights.'
+    : hasDay0
+      ? 'Your routine and targets are saved. Week 1 is ready.'
+      : 'Your routine and targets are saved. Now run your Day 0 baseline test.'
 
   const previewDays = preview?.routine ? Object.entries(preview.routine) : []
   const previewExCount = previewDays.reduce((acc, [, d]) => acc + d.exercises.length, 0)
@@ -100,16 +116,12 @@ export default function ImportPage() {
         {status === 'done' ? (
           <div className="border-2 border-[#4a9b5e] bg-[rgba(74,155,94,0.05)] p-8 text-center mb-6">
             <div className="font-display font-black text-3xl text-[#4a9b5e] mb-3">PROGRAM SET.</div>
-            <p className="text-[13px] text-[#f4ede0] mb-6">
-              {hasDay0
-                ? 'Your routine and targets are saved. Week 1 is ready.'
-                : 'Your routine and targets are saved. Now run your Day 0 baseline test.'}
-            </p>
+            <p className="text-[13px] text-[#f4ede0] mb-6">{doneCopy}</p>
             <button
-              onClick={() => router.push(hasDay0 ? '/log/1/1' : '/day0')}
+              onClick={() => router.push(doneHref)}
               className="bg-[#c8311a] hover:bg-[#d9a441] hover:text-[#1a1a17] text-[#f4ede0] font-bold tracking-[0.25em] text-[13px] uppercase py-4 px-8 transition-all cursor-pointer"
             >
-              {hasDay0 ? '▸ START WEEK 1' : '▸ PROCEED TO DAY 0 TEST'}
+              {doneLabel}
             </button>
           </div>
         ) : (

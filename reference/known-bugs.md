@@ -31,3 +31,31 @@ Anchor HARD with no heavier sets | Hold
 Started light, bumped upAnchor on final, progress normally
 All sets same, all easy | Big bump (+10 or +5)
 All sets same, perfect | Standard bump (+5 or +2.5)
+
+---
+
+## Progression rules v2 (2026-08-29) — RPE 7–10
+
+RPE is now a 7–10 scale per set (7 green · 8 amber · 9 orange · 10 red). Legacy easy/perfect/hard logs read as 7/8/9. Implemented in `src/lib/progression.ts` (`decide`).
+
+Three inputs per exercise: the weight actually lifted, reps per set vs the range, RPE per set. "Delta weight" (actual vs prescribed) is NOT a trigger — the actual weight is just the anchor the rules run from; the verdict's arrow is relative to that anchor and the card shows the plan for context.
+
+```
+0. Anchor = weight of the last logged set. Blank weight = the prescribed weight.
+   Earlier LIGHTER sets are ignored (started light, bumped up).
+   Earlier HEAVIER sets (loaded heavy, then dropped):
+     anchor sets under range                          → DELOAD  anchor × 0.9
+     heavier sets hit min reps AND anchor sets at top → PROGRESS to the midpoint
+     otherwise                                        → HOLD    at anchor
+1. Any anchor set below the rep range      → DELOAD   anchor × 0.9
+2. Not every anchor set at top of range    → HOLD     anchor   (any RPE — chase reps)
+3. Every anchor set at top of range:
+   a. ≥2 sets at RPE 10, or fixed reps ("5") with any RPE 10  → HOLD
+      (one RPE-10 set is normal fatigue; the rep range is the cushion that
+       absorbs +inc — a fixed rep target has no cushion)
+   b. ≥2 sets at RPE 7 and no set ≥ 9                          → JUMP     +2×inc
+   c. otherwise (8s, 9s, a single 10, unrecorded)              → PROGRESS +inc
+Unrecorded RPE is neutral (counts as 8).
+```
+
+Worked example: 50 lb isolation, 8–10 reps, 10/10/10 @ RPE 8, 9, 10 → PROGRESS to 52.5 (the drop back to 8 reps absorbs the increment).

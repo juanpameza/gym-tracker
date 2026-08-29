@@ -65,6 +65,14 @@ create policy "users see own logs"
 create unique index if not exists workout_logs_unique
   on workout_logs (user_id, program_id, week_num, day_num);
 
+-- When the routine was last (re)imported or forked. The log page compares it
+-- with each day's most recent earlier session: if the plan is newer, Claude's
+-- imported weight is prescribed verbatim; otherwise the app auto-progresses
+-- from what was actually lifted. Backfilled from created_at so programs that
+-- predate the column keep auto-progressing exactly as before.
+alter table programs add column if not exists routine_updated_at timestamptz;
+update programs set routine_updated_at = created_at where routine_updated_at is null;
+
 -- ============================================================
 -- SOCIAL LAYER
 -- Private-by-default, opt-in. The three tables above and their

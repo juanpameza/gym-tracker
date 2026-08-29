@@ -95,13 +95,29 @@ export function normalizeTargets(raw: unknown): Record<string, number> {
   return out
 }
 
+function isProgramObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && ('routine' in v || 'targets' in v)
+}
+
 export function extractJson(text: string): ParsedProgram | null {
-  const blockMatch = text.match(/```json\s*([\s\S]*?)```/)
-  const jsonStr = blockMatch ? blockMatch[1].trim() : text.trim()
+  // Every ```-delimited segment is a candidate, tried last-first: Claude may
+  // show an example block before the real one, and a stray fence in prose
+  // must not swallow the block that follows it. No fences → the whole text.
+  const segments = text.split('```').map(s => s.replace(/^\s*json\b/i, '').trim())
   let parsed: unknown = null
-  try {
-    parsed = JSON.parse(jsonStr)
-  } catch {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (!segments[i]) continue
+    try {
+      const candidate = JSON.parse(segments[i])
+      if (isProgramObject(candidate)) {
+        parsed = candidate
+        break
+      }
+    } catch {
+      /* not this segment — keep looking */
+    }
+  }
+  if (!parsed) {
     const objMatch = text.match(/\{[\s\S]*"(?:routine|targets)"[\s\S]*\}/)
     if (objMatch) {
       try {
@@ -111,8 +127,8 @@ export function extractJson(text: string): ParsedProgram | null {
       }
     }
   }
-  if (!parsed || typeof parsed !== 'object') return null
-  const obj = parsed as Record<string, unknown>
+  if (!isProgramObject(parsed)) return null
+  const obj = parsed
   return {
     routine: normalizeRoutine(obj.routine),
     targets: normalizeTargets(obj.targets),
